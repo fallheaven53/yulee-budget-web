@@ -344,134 +344,139 @@ def render_records_tab():
 
     st.markdown(f"**{dm.current_project}** — 집행 내역")
 
-    # ── 집행 등록 폼 ──
-    with st.expander("집행 내역 등록", expanded=st.session_state.get("expand_form", False)):
-        edit_mode = st.session_state.get("edit_record_id") is not None
-        edit_rec = None
-        if edit_mode:
-            rid = st.session_state.get("edit_record_id")
-            for r in dm.records:
-                if r["id"] == rid:
-                    edit_rec = r
-                    break
-            if not edit_rec:
-                st.session_state.edit_record_id = None
-                edit_mode = False
+    # ── 수정 모드: 등록 대신 수정 폼 표시 ──
+    if st.session_state.get("edit_mode", False):
+        target_id = st.session_state.get("edit_target_id")
+        # dm.records에서 직접 원본 데이터 가져오기
+        target_rec = None
+        for r in dm.records:
+            if r["id"] == target_id:
+                target_rec = r
+                break
 
-        with st.form("record_form"):
-            fc1, fc2 = st.columns(2)
+        if target_rec is None:
+            st.session_state["edit_mode"] = False
+            st.rerun()
+        else:
+            # 편성목 옵션
+            if dm.is_common:
+                cat_list = dm.all_project_cat_names()
+            else:
+                cat_list = [c["name"] for c in dm.categories]
+            cat_val = target_rec["cat"]
+            cat_idx = cat_list.index(cat_val) if cat_val in cat_list else 0
 
-            with fc1:
-                default_date = date.today()
-                if edit_rec:
-                    try:
-                        default_date = datetime.strptime(edit_rec["date"], "%Y-%m-%d").date()
-                    except Exception:
-                        pass
-                rec_date = st.date_input("집행일", value=default_date, key="rec_date")
+            st.markdown(f"##### 집행 내역 수정 — ID {target_id}")
+            with st.form(f"edit_form_{target_id}"):
+                ec1, ec2 = st.columns(2)
+                with ec1:
+                    e_date = st.text_input("집행일", value=str(target_rec["date"]))
+                with ec2:
+                    e_cat = st.selectbox("편성목", cat_list, index=cat_idx)
 
-            with fc2:
-                # 편성목 선택
-                if dm.is_common:
-                    cat_options = dm.all_project_cat_names()
-                    default_cat = edit_rec["cat"] if edit_rec else ""
-                    rec_cat = st.selectbox(
-                        "편성목", [""] + cat_options,
-                        index=(cat_options.index(default_cat) + 1
-                               if default_cat in cat_options else 0),
-                        key="rec_cat")
-                else:
-                    cat_names = [c["name"] for c in dm.categories]
-                    default_cat = edit_rec["cat"] if edit_rec else ""
-                    rec_cat = st.selectbox(
-                        "편성목", [""] + cat_names,
-                        index=(cat_names.index(default_cat) + 1
-                               if default_cat in cat_names else 0),
-                        key="rec_cat")
+                ec3, ec4 = st.columns(2)
+                with ec3:
+                    e_item = st.text_input("세부항목", value=str(target_rec["item"]))
+                with ec4:
+                    e_detail = st.text_input("세부내용", value=str(target_rec["detail"]))
 
-            fc3, fc4 = st.columns(2)
+                ec5, ec6, ec7 = st.columns(3)
+                with ec5:
+                    e_amount = st.text_input("금액(원)", value=f"{target_rec['amount']:,}")
+                with ec6:
+                    e_round = st.text_input("회차", value=str(target_rec["round_"]))
+                with ec7:
+                    e_memo = st.text_input("비고", value=str(target_rec["memo"]))
 
-            with fc3:
-                # 세부항목
-                if dm.is_common:
-                    # 관 공통: 자유 입력
-                    rec_item = st.text_input("세부항목 (선택)",
-                                              value=edit_rec["item"] if edit_rec else "",
-                                              key="rec_item_text")
-                else:
-                    item_options = []
-                    if rec_cat:
-                        cat_obj = dm.get_cat(rec_cat)
-                        if cat_obj:
-                            item_options = [i["name"] for i in cat_obj["items"]]
-                    default_item = edit_rec["item"] if edit_rec else ""
-                    rec_item = st.selectbox(
-                        "세부항목", [""] + item_options,
-                        index=(item_options.index(default_item) + 1
-                               if default_item in item_options else 0),
-                        key="rec_item_sel")
+                bc1, bc2 = st.columns(2)
+                with bc1:
+                    submitted = st.form_submit_button("수정 저장", type="primary",
+                                                      use_container_width=True)
+                with bc2:
+                    cancelled = st.form_submit_button("취소", use_container_width=True)
 
-            with fc4:
-                rec_detail = st.text_input("세부내용",
-                                            value=edit_rec["detail"] if edit_rec else "",
-                                            key="rec_detail")
+                if cancelled:
+                    st.session_state["edit_mode"] = False
+                    st.rerun()
 
-            fc5, fc6, fc7 = st.columns(3)
-
-            with fc5:
-                default_amount = str(edit_rec["amount"]) if edit_rec else ""
-                rec_amount = st.text_input("금액(원)", value=default_amount,
-                                            key="rec_amount")
-
-            with fc6:
-                rec_round = st.text_input("회차",
-                                           value=edit_rec["round_"] if edit_rec else "",
-                                           key="rec_round")
-
-            with fc7:
-                rec_memo = st.text_input("비고",
-                                          value=edit_rec["memo"] if edit_rec else "",
-                                          key="rec_memo")
-
-            btn_col1, btn_col2 = st.columns(2)
-            with btn_col1:
-                submitted = st.form_submit_button(
-                    "수정 저장" if edit_mode else "등록",
-                    type="primary", use_container_width=True)
-            with btn_col2:
-                if edit_mode:
-                    cancel = st.form_submit_button("취소", use_container_width=True)
-                    if cancel:
-                        st.session_state.edit_record_id = None
+                if submitted:
+                    if not e_cat:
+                        st.error("편성목을 선택해주세요.")
+                    elif not e_detail.strip():
+                        st.error("세부내용을 입력해주세요.")
+                    elif clean_num(e_amount) <= 0:
+                        st.error("금액은 0보다 커야 합니다.")
+                    else:
+                        date_str = e_date.strip().replace("/", "-")
+                        dm.update_record(target_id, {
+                            "date": date_str,
+                            "cat": e_cat,
+                            "item": e_item.strip() if e_item else "",
+                            "detail": e_detail.strip(),
+                            "amount": clean_num(e_amount),
+                            "round_": e_round.strip(),
+                            "memo": e_memo.strip(),
+                        })
+                        st.session_state["edit_mode"] = False
+                        st.success("수정 완료")
                         st.rerun()
 
-            if submitted:
-                # 유효성 검사
-                if not rec_cat:
+    # ── 신규 등록 (수정 모드가 아닐 때만 표시) ──
+    else:
+      with st.expander("집행 내역 등록"):
+        with st.form("add_record_form"):
+            ac1, ac2 = st.columns(2)
+            with ac1:
+                add_date = st.date_input("집행일", value=date.today(), key="add_date")
+            with ac2:
+                if dm.is_common:
+                    add_cat_opts = dm.all_project_cat_names()
+                else:
+                    add_cat_opts = [c["name"] for c in dm.categories]
+                add_cat = st.selectbox("편성목", [""] + add_cat_opts, key="add_cat")
+
+            ac3, ac4 = st.columns(2)
+            with ac3:
+                if dm.is_common:
+                    add_item = st.text_input("세부항목 (선택)", key="add_item")
+                else:
+                    add_item_opts = []
+                    if add_cat:
+                        cat_obj = dm.get_cat(add_cat)
+                        if cat_obj:
+                            add_item_opts = [i["name"] for i in cat_obj["items"]]
+                    add_item = st.selectbox("세부항목", [""] + add_item_opts, key="add_item")
+            with ac4:
+                add_detail = st.text_input("세부내용", key="add_detail")
+
+            ac5, ac6, ac7 = st.columns(3)
+            with ac5:
+                add_amount = st.text_input("금액(원)", key="add_amount")
+            with ac6:
+                add_round = st.text_input("회차", key="add_round")
+            with ac7:
+                add_memo = st.text_input("비고", key="add_memo")
+
+            if st.form_submit_button("등록", type="primary", use_container_width=True):
+                if not add_cat:
                     st.error("편성목을 선택해주세요.")
-                elif not dm.is_common and not rec_item:
+                elif not dm.is_common and not add_item:
                     st.error("세부항목을 선택해주세요.")
-                elif not rec_detail.strip():
+                elif not add_detail.strip():
                     st.error("세부내용을 입력해주세요.")
-                elif clean_num(rec_amount) <= 0:
+                elif clean_num(add_amount) <= 0:
                     st.error("금액은 0보다 커야 합니다.")
                 else:
-                    data = {
-                        "date": rec_date.strftime("%Y-%m-%d"),
-                        "cat": rec_cat,
-                        "item": rec_item if rec_item else "",
-                        "detail": rec_detail.strip(),
-                        "amount": clean_num(rec_amount),
-                        "round_": rec_round.strip(),
-                        "memo": rec_memo.strip(),
-                    }
-                    if edit_mode:
-                        dm.update_record(st.session_state.edit_record_id, data)
-                        st.session_state.edit_record_id = None
-                        st.success("수정 완료")
-                    else:
-                        dm.add_record(data)
-                        st.success("등록 완료")
+                    dm.add_record({
+                        "date": add_date.strftime("%Y-%m-%d"),
+                        "cat": add_cat,
+                        "item": add_item if add_item else "",
+                        "detail": add_detail.strip(),
+                        "amount": clean_num(add_amount),
+                        "round_": add_round.strip(),
+                        "memo": add_memo.strip(),
+                    })
+                    st.success("등록 완료")
                     st.rerun()
 
     # ── 필터링 ──
@@ -495,8 +500,6 @@ def render_records_tab():
 
     # ── 목록 ──
     records = dm.records.copy()
-
-    # 필터 적용
     if flt_cat != "전체":
         records = [r for r in records if r["cat"] == flt_cat]
     if flt_month != "전체":
@@ -504,15 +507,12 @@ def render_records_tab():
         records = [r for r in records if r["date"] and r["date"][5:7] == m]
     if flt_memo != "전체":
         records = [r for r in records if r.get("memo", "").strip() == flt_memo]
-
-    # 집행일 오름차순 정렬
     records = sorted(records, key=lambda r: r.get("date", ""))
 
     if records:
         total_amount = sum(r["amount"] for r in records)
         st.caption(f"조회 결과: {len(records)}건 | 합계: {total_amount:,}원")
 
-        # 테이블 표시
         display_data = []
         for r in records:
             display_data.append({
@@ -525,11 +525,10 @@ def render_records_tab():
                 "회차": r["round_"],
                 "비고": r["memo"],
             })
-
         df = pd.DataFrame(display_data)
         st.dataframe(df, use_container_width=True, hide_index=True)
 
-        # 수정/삭제
+        # ── 수정 / 삭제 ──
         st.markdown("##### 수정 / 삭제")
         rec_ids = [r["id"] for r in records]
         sel_id = st.selectbox("ID 선택", rec_ids, key="action_rec_id")
@@ -537,8 +536,8 @@ def render_records_tab():
         ac1, ac2 = st.columns(2)
         with ac1:
             if st.button("수정", key="btn_edit_rec", use_container_width=True):
-                st.session_state.edit_record_id = sel_id
-                st.session_state.expand_form = True
+                st.session_state["edit_mode"] = True
+                st.session_state["edit_target_id"] = sel_id
                 st.rerun()
         with ac2:
             if st.button("삭제", key="btn_del_rec", use_container_width=True):
