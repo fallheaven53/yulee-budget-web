@@ -5,7 +5,7 @@ Streamlit 기반 예산 집행 현황 관리기
 
 import streamlit as st
 import pandas as pd
-import os, io
+import os, io, json
 from datetime import datetime, date
 from data_manager import (
     DataManager, ProjectData, COMMON_PROJECT,
@@ -20,19 +20,128 @@ PASSWORD = os.environ.get("APP_PASSWORD", "yulee0328")
 
 
 # ═══════════════════════════════════════════
+#  구글 시트 동기화 (주문서 #012)
+# ═══════════════════════════════════════════
+#  로컬과 Streamlit Cloud 양쪽이 같은 구글 시트를 단일 저장소로 공유한다.
+#  - 초기 로드: 로컬 xlsx → 그다음 gsheet에서 덮어쓰기 (gsheet가 진짜 소스)
+#  - 저장 시: 로컬 xlsx 저장 후 gsheet에도 업로드
+#  - Cloud에선 ephemeral 로컬 xlsx가 매번 리셋되지만 gsheet에서 복구됨
+
+def _load_gsheet_config():
+    """spreadsheet_id와 credentials_dict 소스를 결정."""
+    sid = None
+    creds_dict = None
+    creds_path = None
+
+    # 1) Streamlit secrets (Cloud + 로컬 secrets.toml 둘 다)
+    try:
+        if "gcp_service_account" in st.secrets:
+            creds_dict = dict(st.secrets["gcp_service_account"])
+        if "SPREADSHEET_ID" in st.secrets:
+            sid = st.secrets["SPREADSHEET_ID"]
+        elif "budget_spreadsheet_id" in st.secrets:
+            sid = st.secrets["budget_spreadsheet_id"]
+    except Exception:
+        pass
+
+    # 2) 로컬 config 파일 (fallback)
+    if sid is None or (creds_dict is None):
+        cfg_path = os.path.join(APP_DIR, "gsheet_config.json")
+        if os.path.exists(cfg_path):
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                sid = sid or cfg.get("spreadsheet_id")
+                cf = cfg.get("credentials_file", "credentials.json")
+                p = cf if os.path.isabs(cf) else os.path.join(APP_DIR, cf)
+                if os.path.exists(p):
+                    creds_path = p
+            except Exception:
+                pass
+
+    return sid, creds_dict, creds_path
+
+
+def get_sync():
+    """세션에 캐시된 GoogleSheetSync 인스턴스 (구성 실패 시 None)."""
+    if "_gsync" in st.session_state:
+        return st.session_state["_gsync"]
+
+    sid, creds_dict, creds_path = _load_gsheet_config()
+    if not sid or (creds_dict is None and creds_path is None):
+        st.session_state["_gsync"] = None
+        return None
+
+    try:
+        from gsheet_sync import GoogleSheetSync
+        sync = GoogleSheetSync(
+            credentials_path=creds_path,
+            credentials_dict=creds_dict,
+            spreadsheet_id=sid,
+        )
+        st.session_state["_gsync"] = sync
+        return sync
+    except Exception as e:
+        st.session_state["_gsync"] = None
+        st.session_state["_gsync_err"] = str(e)
+        return None
+
+
+def _wrap_dm_save(dm):
+    """dm.save()가 호출될 때마다 gsheet에도 업로드되도록 래핑."""
+    if getattr(dm, "_save_wrapped", False):
+        return
+    _orig_save = dm.save
+
+    def _save_with_sync():
+        _orig_save()
+        sync = get_sync()
+        if sync is None:
+            return
+        try:
+            sync.upload_all(dm)
+        except Exception as e:
+            st.session_state["_gsync_upload_err"] = str(e)
+
+    dm.save = _save_with_sync
+    dm._save_wrapped = True
+
+
+# ═══════════════════════════════════════════
 #  세션 초기화
 # ═══════════════════════════════════════════
 
 def get_dm() -> DataManager:
-    """DataManager를 세션에 유지"""
+    """DataManager를 세션에 유지 (+ gsheet 동기화)"""
     if "dm" not in st.session_state:
-        st.session_state.dm = DataManager(DB_FILE)
+        dm = DataManager(DB_FILE)
+
+        # gsheet에서 최신 상태를 받아 덮어쓴다 (진짜 소스)
+        sync = get_sync()
+        if sync is not None:
+            try:
+                ok = sync.download_all(dm)
+                if not ok or not dm.project_names:
+                    # gsheet가 비어 있으면 로컬 상태를 시드로 업로드
+                    dm = DataManager(DB_FILE)  # 로컬 다시 로드
+                    try:
+                        sync.upload_all(dm)
+                        st.session_state["_gsync_seeded"] = True
+                    except Exception as e:
+                        st.session_state["_gsync_upload_err"] = str(e)
+            except Exception as e:
+                st.session_state["_gsync_download_err"] = str(e)
+
+        _wrap_dm_save(dm)
+        st.session_state.dm = dm
     return st.session_state.dm
 
 
 def reload_dm():
-    """데이터 강제 리로드"""
-    st.session_state.dm = DataManager(DB_FILE)
+    """데이터 강제 리로드 (+ gsheet 재동기)"""
+    st.session_state.pop("dm", None)
+    st.session_state.pop("_gsync", None)
+    get_dm()
 
 
 # ═══════════════════════════════════════════
@@ -180,8 +289,33 @@ def render_sidebar():
             st.sidebar.success("데이터가 복원되었습니다.")
             st.rerun()
 
+    # ── 구글 시트 동기화 상태 ──
+    st.sidebar.markdown("**구글 시트 동기화**")
+    sync = get_sync()
+    if sync is None:
+        err = st.session_state.get("_gsync_err")
+        if err:
+            st.sidebar.error(f"연결 실패: {err[:60]}")
+        else:
+            st.sidebar.caption("미설정 (gsheet_config.json 또는 secrets 확인)")
+    else:
+        if st.session_state.get("_gsync_seeded"):
+            st.sidebar.info("로컬 데이터를 구글 시트에 시드 업로드 완료")
+        else:
+            st.sidebar.success("구글 시트 연동 중")
+        up_err = st.session_state.get("_gsync_upload_err")
+        dn_err = st.session_state.get("_gsync_download_err")
+        if up_err:
+            st.sidebar.warning(f"업로드 경고: {up_err[:60]}")
+        if dn_err:
+            st.sidebar.warning(f"다운로드 경고: {dn_err[:60]}")
+
+        if st.sidebar.button("구글 시트에서 다시 불러오기", use_container_width=True):
+            reload_dm()
+            st.rerun()
+
     st.sidebar.divider()
-    st.sidebar.caption("율이공방 — 예산 관리 (Web) v1.0")
+    st.sidebar.caption("율이공방 — 예산 관리 (Web) v1.1 · gsheet sync")
 
 
 # ═══════════════════════════════════════════

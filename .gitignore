@@ -1,0 +1,25 @@
+# 서비스 계정 비밀키 (절대 커밋 금지)
+credentials.json
+nice-abbey-*.json
+*-service-account*.json
+
+# gsheet 설정 (spreadsheet_id는 Streamlit secrets로 관리)
+gsheet_config.json
+
+# 로컬 DB (gsheet가 진짜 소스)
+예산집행_DB.xlsx
+*.xlsx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Streamlit 로컬 secrets
+.streamlit/secrets.toml
+
+# 실행 배치
+실행.bat
+
+# 참고 문서 (선택적 커밋)
+구글시트_연동_설정_안내.md
