@@ -558,19 +558,19 @@ def render_records_tab():
     # ── 신규 등록 (수정 모드가 아닐 때만 표시) ──
     else:
       with st.expander("집행 내역 등록"):
+        # 편성목 선택은 form 밖에 둔다 — form 내부에선 selectbox 변경이
+        # 즉시 반영되지 않아 cascading 드롭다운이 동작하지 않음
+        if dm.is_common:
+            add_cat_opts = dm.all_project_cat_names()
+        else:
+            add_cat_opts = [c["name"] for c in dm.categories]
+        add_cat = st.selectbox("편성목", [""] + add_cat_opts, key="add_cat")
+
         with st.form("add_record_form"):
             ac1, ac2 = st.columns(2)
             with ac1:
                 add_date = st.date_input("집행일", value=date.today(), key="add_date")
             with ac2:
-                if dm.is_common:
-                    add_cat_opts = dm.all_project_cat_names()
-                else:
-                    add_cat_opts = [c["name"] for c in dm.categories]
-                add_cat = st.selectbox("편성목", [""] + add_cat_opts, key="add_cat")
-
-            ac3, ac4 = st.columns(2)
-            with ac3:
                 if dm.is_common:
                     add_item = st.text_input("세부항목 (선택)", key="add_item")
                 else:
@@ -580,8 +580,8 @@ def render_records_tab():
                         if cat_obj:
                             add_item_opts = [i["name"] for i in cat_obj["items"]]
                     add_item = st.selectbox("세부항목", [""] + add_item_opts, key="add_item")
-            with ac4:
-                add_detail = st.text_input("세부내용", key="add_detail")
+
+            add_detail = st.text_input("세부내용", key="add_detail")
 
             ac5, ac6, ac7 = st.columns(3)
             with ac5:
