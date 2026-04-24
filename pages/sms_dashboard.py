@@ -19,7 +19,7 @@ from sms_utils import (
 st.set_page_config(page_title="SMS 발송 현황", page_icon="📱", layout="wide")
 st.title("SMS 발송 현황")
 
-SMS_LOG_SPREADSHEET_ID = "13BZbmxyUTQUyBBMlUtel6bk2YXKc3MZYRweE6feCQsk"
+SMS_LOG_SPREADSHEET_ID = "1CHTo8BALaSyS8K1TKMVM22rUbG5lbqVRDgsMiOMPCoQ"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 FUNCTION_URL = (
     "https://asia-northeast3-nice-abbey-473900-e6"
