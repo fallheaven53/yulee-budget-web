@@ -82,7 +82,8 @@ def get_previous_period_stats(full_df, period):
     prev_success = len(prev_df[prev_df["결과"] == "성공"])
     prev_fail = len(prev_df[prev_df["결과"] == "실패"])
     prev_skipped = len(prev_df[prev_df["결과"] == "건너뜀"])
-    prev_sent = prev_total - prev_skipped
+    prev_no_contact = len(prev_df[prev_df["결과"] == "연락처 없음"])
+    prev_sent = prev_total - prev_skipped - prev_no_contact
 
     return {
         "total": prev_total,

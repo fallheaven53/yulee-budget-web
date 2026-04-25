@@ -66,8 +66,8 @@ with st.sidebar:
 
     result_filter = st.multiselect(
         "결과 필터",
-        ["성공", "실패", "건너뜀"],
-        default=["성공", "실패", "건너뜀"],
+        ["성공", "실패", "건너뜀", "연락처 없음"],
+        default=["성공", "실패", "건너뜀", "연락처 없음"],
     )
 
     trigger_filter = st.multiselect(
@@ -96,23 +96,25 @@ filtered_df = filter_by_conditions(filtered_df, result_filter, trigger_filter)
 # ── 1. 요약 카드 ──
 def render_summary_cards(df, full_df, period):
     if df.empty:
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         with c1: st.metric("발송", "0건")
         with c2: st.metric("성공률", "-")
         with c3: st.metric("실패", "0건")
         with c4: st.metric("건너뜀", "0건")
+        with c5: st.metric("연락처 없음", "0건")
         return
 
     total = len(df)
     success = len(df[df["결과"] == "성공"])
     fail = len(df[df["결과"] == "실패"])
     skipped = len(df[df["결과"] == "건너뜀"])
-    sent = total - skipped
+    no_contact = len(df[df["결과"] == "연락처 없음"])
+    sent = total - skipped - no_contact
     success_rate = round(success / max(sent, 1) * 100, 1)
 
     prev = get_previous_period_stats(full_df, period)
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         d = total - prev["total"] if prev else None
         st.metric("발송", f"{total}건", delta=f"{d}건" if d is not None else None)
@@ -125,6 +127,8 @@ def render_summary_cards(df, full_df, period):
     with c4:
         d = skipped - prev["skipped"] if prev else None
         st.metric("건너뜀", f"{skipped}건", delta=f"{d}건" if d is not None else None, delta_color="off")
+    with c5:
+        st.metric("연락처 없음", f"{no_contact}건")
 
 
 render_summary_cards(filtered_df, full_df, period)
@@ -148,7 +152,7 @@ def render_weekly_chart(df):
 
     pivot = chart_df.groupby(["날짜_sort", "날짜", "결과"]).size().reset_index(name="건수")
 
-    color_map = {"성공": "#4CAF50", "실패": "#F44336", "건너뜀": "#9E9E9E"}
+    color_map = {"성공": "#4CAF50", "실패": "#F44336", "건너뜀": "#9E9E9E", "연락처 없음": "#FF9800"}
 
     chart = (
         alt.Chart(pivot)
@@ -308,6 +312,8 @@ def render_detail_table(df):
             return "color: #F44336; font-weight: bold"
         elif val == "건너뜀":
             return "color: #9E9E9E"
+        elif val == "연락처 없음":
+            return "color: #FF9800"
         return ""
 
     try:
