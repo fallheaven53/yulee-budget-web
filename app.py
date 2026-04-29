@@ -16,7 +16,7 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(APP_DIR, "예산집행_DB.xlsx")
 
 # ── 비밀번호 설정 ──
-PASSWORD = os.environ.get("APP_PASSWORD", "yulee0328")
+PASSWORD = os.environ.get("APP_PASSWORD", "yulee2026")
 
 
 # ═══════════════════════════════════════════
