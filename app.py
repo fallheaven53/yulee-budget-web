@@ -11,6 +11,7 @@ from data_manager import (
     DataManager, ProjectData, COMMON_PROJECT,
     DEFAULT_PROJECTS, clean_num, fmt_won
 )
+import budget_cf_client  # #2026-101W: 쓰기는 중계 CF 경유
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(APP_DIR, "예산집행_DB.xlsx")
@@ -87,24 +88,60 @@ def get_sync():
         return None
 
 
-def _wrap_dm_save(dm):
-    """dm.save()가 호출될 때마다 gsheet에도 업로드되도록 래핑."""
-    if getattr(dm, "_save_wrapped", False):
+# #2026-101W ③ 정합성 오류 → 사용자 친화 메시지
+_ERR_MAP = {
+    "category exists": "이미 등록된 편성목입니다.",
+    "project exists": "이미 존재하는 사업입니다.",
+    "target name exists": "이미 존재하는 사업명입니다.",
+    "category not found": "편성목을 찾을 수 없습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
+    "record not found": "대상 집행 내역을 찾을 수 없습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
+    "project not found": "대상 사업을 찾을 수 없습니다.",
+}
+
+
+def _friendly(msg):
+    return _ERR_MAP.get(str(msg).strip(), f"저장에 실패했습니다: {msg}")
+
+
+def _apply_project_data(dm, data):
+    """CF 응답의 변경 필드만 세션 dm에 부분 갱신(변경 없는 탭은 세션 유지·재로드 안 함)."""
+    name = data.get("name")
+    if not name:
         return
-    _orig_save = dm.save
+    if name not in dm.projects:
+        dm.project_names.append(name)
+        dm.projects[name] = ProjectData()
+    p = dm.projects[name]
+    if "year" in data:
+        p.year = data["year"]
+    if "total_budget" in data:
+        p.total_budget = data["total_budget"]
+    if "categories" in data:
+        p.categories = data["categories"]
+    if "records" in data:
+        p.records = data["records"]
+    if "monthly" in data:
+        p.monthly = {cat: {int(k): v for k, v in md.items()} for cat, md in data["monthly"].items()}
 
-    def _save_with_sync():
-        _orig_save()
-        sync = get_sync()
-        if sync is None:
-            return
+
+def _cf_apply(fn, *args):
+    """#2026-101W: 쓰기를 중계 CF로 통일.
+    ① 진행 표시(spinner)로 중복 클릭 완화, ② 성공 응답의 data로 세션 부분 갱신(전체
+    download_all 회피 — 저장 지연 단축), ③ 실패 시 사용자 친화 메시지. 반환 True/False.
+    (전량 덮어쓰기 upload_all은 제거 — CF가 상태열·sheet_rev를 일관 관리.)"""
+    with st.spinner("처리 중..."):
         try:
-            sync.upload_all(dm)
-        except Exception as e:
-            st.session_state["_gsync_upload_err"] = str(e)
-
-    dm.save = _save_with_sync
-    dm._save_wrapped = True
+            result = fn(*args)
+        except budget_cf_client.BudgetCFError as e:
+            st.error(_friendly(e))
+            return False
+    dm = st.session_state.get("dm")
+    data = result.get("data") if isinstance(result, dict) else None
+    if data and dm is not None:
+        _apply_project_data(dm, data)     # record/plan: 세션 부분 갱신
+    else:
+        st.session_state.pop("dm", None)  # project 조작 등: 전체 재로드
+    return True
 
 
 # ═══════════════════════════════════════════
@@ -132,7 +169,11 @@ def get_dm() -> DataManager:
             except Exception as e:
                 st.session_state["_gsync_download_err"] = str(e)
 
-        _wrap_dm_save(dm)
+        # #2026-101W: CF 조작 후 재로드 시 선택 사업(current_project) 유지
+        cur = st.session_state.get("current_project")
+        if cur and cur in dm.project_names:
+            dm.current_project = cur
+
         st.session_state.dm = dm
     return st.session_state.dm
 
@@ -181,6 +222,7 @@ def render_sidebar():
 
     if selected != dm.current_project:
         dm.switch_project(selected)
+        st.session_state["current_project"] = selected
         st.rerun()
 
     # 사업 관리 버튼
@@ -195,6 +237,7 @@ def render_sidebar():
         if st.button("삭제", key="btn_del_pj", use_container_width=True):
             st.session_state.show_del_pj = True
 
+
     # 사업 추가 다이얼로그
     if st.session_state.get("show_add_pj"):
         with st.sidebar.form("add_pj_form"):
@@ -204,10 +247,10 @@ def render_sidebar():
                     if new_name.strip() in dm.projects:
                         st.sidebar.error("이미 존재하는 사업입니다.")
                     else:
-                        dm.add_project(new_name.strip())
-                        dm.save()
-                        st.session_state.show_add_pj = False
-                        st.rerun()
+                        if _cf_apply(budget_cf_client.project_add, new_name.strip()):
+                            st.session_state["current_project"] = new_name.strip()
+                            st.session_state.show_add_pj = False
+                            st.rerun()
                 else:
                     st.sidebar.warning("사업명을 입력해주세요.")
 
@@ -218,31 +261,43 @@ def render_sidebar():
             if st.form_submit_button("변경"):
                 nn = new_name.strip()
                 if nn and nn != dm.current_project:
-                    if dm.rename_project(dm.current_project, nn):
-                        dm.save()
+                    if _cf_apply(budget_cf_client.project_rename, dm.current_project, nn):
+                        st.session_state["current_project"] = nn
                         st.session_state.show_rename_pj = False
                         st.rerun()
-                    else:
-                        st.sidebar.error("이미 존재하는 사업명입니다.")
                 else:
                     st.session_state.show_rename_pj = False
                     st.rerun()
 
-    # 사업 삭제 확인
+    # 사업 물리 삭제 확인 (#2026-101W 조정: 강화 확인 + 사업명 재확인, 낙관적 제외·동기)
     if st.session_state.get("show_del_pj"):
-        st.sidebar.warning(f"'{dm.current_project}' 사업을 삭제합니다.")
+        target = dm.current_project
+        st.sidebar.warning("이 사업을 완전히 삭제합니다. 시트 데이터도 함께 삭제되며 복구할 수 없습니다. 계속하시겠습니까?")
+        confirm = st.sidebar.text_input(f"삭제하려면 사업명 「{target}」을(를) 정확히 입력하세요",
+                                        key="del_confirm_name")
         c1, c2 = st.sidebar.columns(2)
         with c1:
-            if st.button("삭제 확인", type="primary", use_container_width=True):
+            match = confirm.strip() == target
+            if st.button("완전 삭제", type="primary", disabled=not match, use_container_width=True):
                 if len(dm.project_names) <= 1:
                     st.sidebar.error("최소 1개의 사업이 필요합니다.")
                 else:
-                    dm.delete_project(dm.current_project)
-                    dm.save()
-                    st.session_state.show_del_pj = False
-                    st.rerun()
+                    with st.spinner("삭제 중..."):
+                        try:
+                            budget_cf_client.project_delete(target)
+                            deleted = True
+                        except budget_cf_client.BudgetCFError as e:
+                            st.error(_friendly(e))
+                            deleted = False
+                    if deleted:
+                        st.session_state.pop("current_project", None)
+                        st.session_state.pop("dm", None)  # 물리 삭제 후 전체 재로드
+                        st.session_state.pop("del_confirm_name", None)
+                        st.session_state.show_del_pj = False
+                        st.rerun()
         with c2:
             if st.button("취소", use_container_width=True):
+                st.session_state.pop("del_confirm_name", None)
                 st.session_state.show_del_pj = False
                 st.rerun()
 
@@ -256,12 +311,12 @@ def render_sidebar():
         new_budget = st.sidebar.text_input("총예산(원)", value=f"{dm.total_budget:,}",
                                             key="sb_budget")
         if new_year != dm.year:
-            dm.year = new_year
-            dm.save()
+            if _cf_apply(budget_cf_client.plan_settings, dm.current_project, new_year, dm.total_budget):
+                st.rerun()
         budget_val = clean_num(new_budget)
         if budget_val != dm.total_budget:
-            dm.total_budget = budget_val
-            dm.save()
+            if _cf_apply(budget_cf_client.plan_settings, dm.current_project, dm.year, budget_val):
+                st.rerun()
 
     st.sidebar.divider()
 
@@ -368,20 +423,16 @@ def render_plan_tab():
                                "code": new_cat_code.strip(),
                                "budget": clean_num(new_cat_budget),
                                "items": []}
-                        dm.categories.append(cat)
-                        dm.save()
-                        st.rerun()
+                        if _cf_apply(budget_cf_client.plan_cat_add, dm.current_project, cat):
+                            st.rerun()
 
         # 편성목 삭제
         if dm.categories:
             cat_names = [c["name"] for c in dm.categories]
             del_cat = st.selectbox("삭제할 편성목", cat_names, key="del_cat_sel")
             if st.button("편성목 삭제", key="btn_del_cat"):
-                dm.categories = [c for c in dm.categories if c["name"] != del_cat]
-                if del_cat in dm.monthly:
-                    del dm.monthly[del_cat]
-                dm.save()
-                st.rerun()
+                if _cf_apply(budget_cf_client.plan_cat_del, dm.current_project, del_cat):
+                    st.rerun()
 
     # ── 세부항목 ──
     if dm.categories:
@@ -421,23 +472,17 @@ def render_plan_tab():
                                                          key="new_item_budget")
                     submitted = st.form_submit_button("세부항목 추가")
                     if submitted and new_item_name.strip():
-                        cat["items"].append({
-                            "name": new_item_name.strip(),
-                            "budget": clean_num(new_item_budget)
-                        })
-                        dm.sync_cat_budget(cat["name"])
-                        dm.save()
-                        st.rerun()
+                        item = {"name": new_item_name.strip(), "budget": clean_num(new_item_budget)}
+                        if _cf_apply(budget_cf_client.plan_item_add, dm.current_project, cat["name"], item):
+                            st.rerun()
 
                 if cat["items"]:
                     del_item = st.selectbox("삭제할 세부항목",
                                              [i["name"] for i in cat["items"]],
                                              key="del_item_sel")
                     if st.button("세부항목 삭제", key="btn_del_item"):
-                        cat["items"] = [i for i in cat["items"] if i["name"] != del_item]
-                        dm.sync_cat_budget(cat["name"])
-                        dm.save()
-                        st.rerun()
+                        if _cf_apply(budget_cf_client.plan_item_del, dm.current_project, cat["name"], del_item):
+                            st.rerun()
 
     # ── 월별 배분 ──
     if dm.categories:
@@ -458,10 +503,9 @@ def render_plan_tab():
                     new_monthly[m] = val
 
             if st.form_submit_button("월별 배분 저장"):
-                dm.monthly[sel_month_cat] = new_monthly
-                dm.save()
-                st.success("저장되었습니다.")
-                st.rerun()
+                if _cf_apply(budget_cf_client.plan_monthly, dm.current_project, sel_month_cat, new_monthly):
+                    st.success("저장되었습니다.")
+                    st.rerun()
 
         # 월별 요약 테이블
         total_plan = sum(md.get(m, 0) for m in range(1, 13))
@@ -542,7 +586,7 @@ def render_records_tab():
                         st.error("금액은 0보다 커야 합니다.")
                     else:
                         date_str = e_date.strip().replace("/", "-")
-                        dm.update_record(target_id, {
+                        rec = {
                             "date": date_str,
                             "cat": e_cat,
                             "item": e_item.strip() if e_item else "",
@@ -550,9 +594,11 @@ def render_records_tab():
                             "amount": clean_num(e_amount),
                             "round_": e_round.strip(),
                             "memo": e_memo.strip(),
-                        })
-                        st.session_state["edit_mode"] = False
-                        st.success("수정 완료")
+                        }
+                        if _cf_apply(budget_cf_client.record_update, dm.current_project, target_id, rec):
+                            st.session_state["edit_mode"] = False
+                            st.success("수정 완료")
+                            st.rerun()
                         st.rerun()
 
     # ── 신규 등록 (수정 모드가 아닐 때만 표시) ──
@@ -601,7 +647,7 @@ def render_records_tab():
                 elif clean_num(add_amount) <= 0:
                     st.error("금액은 0보다 커야 합니다.")
                 else:
-                    dm.add_record({
+                    rec = {
                         "date": add_date.strftime("%Y-%m-%d"),
                         "cat": add_cat,
                         "item": add_item if add_item else "",
@@ -609,9 +655,10 @@ def render_records_tab():
                         "amount": clean_num(add_amount),
                         "round_": add_round.strip(),
                         "memo": add_memo.strip(),
-                    })
-                    st.success("등록 완료")
-                    st.rerun()
+                    }
+                    if _cf_apply(budget_cf_client.record_add, dm.current_project, rec):
+                        st.success("등록 완료")
+                        st.rerun()
 
     # ── 필터링 ──
     fl1, fl2, fl3 = st.columns(3)
@@ -683,9 +730,9 @@ def render_records_tab():
             dc1, dc2 = st.columns(2)
             with dc1:
                 if st.button("삭제 확인", type="primary", key="confirm_del_yes"):
-                    dm.delete_record(rid)
-                    st.session_state.confirm_del_rec = None
-                    st.rerun()
+                    if _cf_apply(budget_cf_client.record_delete, dm.current_project, rid):
+                        st.session_state.confirm_del_rec = None
+                        st.rerun()
             with dc2:
                 if st.button("취소", key="confirm_del_no"):
                     st.session_state.confirm_del_rec = None

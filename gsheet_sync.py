@@ -171,7 +171,9 @@ class GoogleSheetSync:
             rows = ws_pj.get_all_values()
             for row in rows[1:]:  # 헤더 건너뛰기
                 pn = row[0].strip() if row else ""
-                if pn:
+                # #2026-101W 상태열: 숨김 사업은 웹앱 목록에서 제외(활성만). 열 없으면 활성 간주.
+                status = row[1].strip() if len(row) > 1 and row[1].strip() else "활성"
+                if pn and status == "활성":
                     dm.project_names.append(pn)
                     dm.projects[pn] = ProjectData()
         except gspread.exceptions.WorksheetNotFound:
